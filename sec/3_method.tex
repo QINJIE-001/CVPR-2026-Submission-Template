@@ -1,0 +1,131 @@
+% Converted from drafts/paper_en.md on 2026-10-21. \method is defined in main.tex. Citation keys are placeholders to be added to main.bib.
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Setting and Overview}
+\label{sec:3_1}
+
+Given a reference image $r$ and a text prompt $c$, we aim to generate a video $x \in \mathbb{R}^{F\times H\times W\times 3}$ that depicts the subject in $r$ and follows $c$. We assume access to (a) a pretrained text-to-video diffusion transformer, (b) a modest set of videos with captions, used only to learn a motion control, and (c) a large set of subject-driven \emph{image} pairs $(r, x^{\mathrm{img}}, c)$, in which the target image shows the same subject as $r$ under a different pose, scene, or attribute. No reference--video pairs are used.
+
+\method keeps the backbone frozen and adds two adapters that are trained in two stages (Fig.~\ref{fig:overview}). Stage I produces a \emph{motion carrier} whose motion strength is controlled by a scalar $M$. Stage II trains a \emph{reference branch} on image pairs. At every denoising step the final velocity prediction is
+\begin{equation}\label{eq:1}
+\hat v = v_{\mathrm{motion}}(z_t, c; M) \;+\; \lambda\,\big[P(h_{\mathrm{real}}) - P(h_{\mathrm{null}})\big],
+\end{equation}
+where $v_{\mathrm{motion}}$ is the carrier's prediction, $h_{\mathrm{real}}$ and $h_{\mathrm{null}}$ are the final hidden states of the reference branch evaluated with the real reference and with a learned null reference, respectively, and $P$ is a shared readout head. The three terms are computed by three passes through the same frozen backbone that share parameters but not hidden states.
+
+\subsection{Preliminaries}
+\label{sec:3_2}
+
+\textbf{Backbone.} We build on a latent video DiT \cite{wan2025, peebles2023dit}. A video is encoded by a causal 3D VAE into latents $z \in \mathbb{R}^{f\times h\times w\times C}$, patchified into $N_v$ tokens, and processed by $L$ transformer blocks. Each block applies timestep-modulated self-attention over all spatiotemporal tokens, cross-attention to text embeddings, and a feed-forward network:
+\begin{equation}\label{eq:2}
+\begin{aligned}
+u &= \mathrm{LN}_1(X)\,(1+s_1(t)) + b_1(t), \\
+X_1 &= X + g_1(t)\, W_o\,\mathrm{Attn}(W_q u, W_k u, W_v u), \\
+X_2 &= X_1 + \mathrm{CrossAttn}(\mathrm{LN}_2(X_1), c), \\
+X_3 &= X_2 + g_3(t)\,\mathrm{FFN}\big(\mathrm{LN}_3(X_2)(1+s_3(t)) + b_3(t)\big),
+\end{aligned}
+\end{equation}
+with 3D rotary position embeddings applied to queries and keys. We denote by $W_{\mathrm{out}}$ the final projection that maps the normalized last hidden state to the velocity.
+
+\textbf{Flow matching.} Training uses the rectified-flow objective \cite{liu2022rectified, lipman2022flow}. For clean latents $z_0$, noise $\epsilon \sim \mathcal{N}(0, I)$, and noise level $\sigma \in (0,1)$ drawn from a logit-normal distribution \cite{esser2024sd3}, the noisy input is $z_\sigma = (1-\sigma) z_0 + \sigma \epsilon$ and the target velocity is $v^\star = \epsilon - z_0$.
+
+\subsection{Stage I: A Controllable Motion Carrier}
+\label{sec:3_3}
+
+The role of Stage I is to make the backbone's motion \emph{adjustable}, and in particular to give it a static regime that can later absorb image supervision.
+
+\textbf{Motion adapter.} Following Still-Moving \cite{chefer2024stillmoving}, we attach low-rank adapters \cite{hu2022lora} to the self-attention of every block. Because the backbone's self-attention is jointly spatiotemporal, the adapters are placed on the query, key, and value projections of this attention, scaled by a runtime coefficient $M$:
+\begin{equation}\label{eq:3}
+Q = W_q u + M\,\Delta W_q(u),\qquad
+K = W_k u + M\,\Delta W_k(u),\qquad
+V = W_v u + M\,\Delta W_v(u).
+\end{equation}
+Each $\Delta W$ is a rank-$r$ factorization ($r{=}4$) with a zero-initialized up-projection, so that $M{=}0$ recovers the backbone exactly at initialization and at any later time.
+
+\textbf{Signed training.} Still-Moving trains the adapter on frozen videos only, so that it learns to \emph{remove} motion and is switched off at inference. We instead train with two kinds of clips and two signs of $M$: static clips obtained by repeating a single image across all frames are supervised with $M{=}{+}1$, and real videos are supervised with $M{=}{-}1$. Under the flow-matching loss over all frames, the adapter must therefore encode a direction in parameter space that moves the backbone from its native motion toward stillness when added, and that reproduces real motion when subtracted. The result is a continuous control: $M{=}1$ yields static output, $M{=}0$ yields the backbone's native motion, and $M{<}0$ amplifies motion. Only the adapter is trained; the backbone, VAE, and text encoder are frozen.
+
+After Stage I the adapter is frozen. In everything that follows, "the motion carrier" refers to the frozen backbone together with this frozen adapter, evaluated at a chosen $M$.
+
+\subsection{Stage II: Learning Appearance from Image Pairs}
+\label{sec:3_4}
+
+The reference branch adds the subject's appearance. It reuses the frozen backbone with the motion adapter \emph{disabled} ($M{=}0$), so that this branch models appearance only.
+
+\textbf{Reference tokens.} The reference image is encoded by the same VAE and patch embedding as the video, producing $N_r$ reference tokens $S$. Following Stand-In \cite{xue2025standin}, the reference is treated as a clean conditioning signal: its timestep is fixed to $0$, and the modulation parameters in Eq.~\eqref{eq:2} are computed from $t{=}0$ for reference tokens and from the actual $t$ for video tokens. Reference tokens pass through all $L$ blocks alongside the video tokens and are discarded before the output head.
+
+\textbf{Conditional position mapping.} Reference tokens receive rotary coordinates disjoint from the video: the temporal coordinate of the $i$-th reference image is $-(i{+}1)$, and its spatial coordinates are offset beyond the video grid, i.e., $h \in [h_v, h_v + h_r)$ and $w \in [w_v, w_v + w_r)$. The backbone can thus distinguish reference from video tokens using only positional information, and several reference images can be supplied without ambiguity.
+
+\textbf{Reference self-attention.} Reference tokens attend only to themselves. Their query, key, and value projections receive a separate low-rank adapter of rank $128$:
+\begin{equation}\label{eq:4}
+Q_r = (W_q + \Delta W^{\mathrm{ref}}_q)\,u_r,\quad
+K_r = (W_k + \Delta W^{\mathrm{ref}}_k)\,u_r,\quad
+V_r = (W_v + \Delta W^{\mathrm{ref}}_v)\,u_r,
+\end{equation}
+after which the reference tokens pass through the frozen cross-attention and FFN. Because reference tokens never read video tokens, the reference stream is a stable conditioning source whose content does not drift with the noisy video.
+
+\textbf{Joint attention from video to reference.} Video queries attend to video keys and reference keys in a single softmax:
+\begin{equation}\label{eq:5}
+A = \mathrm{softmax}\!\left(\frac{[\,Q_v K_v^{\top}\;\big|\;Q_v K_r^{\top}\,]}{\sqrt d} + \mathbf{m}\right),\qquad
+O = A_v V_v + A_r V_r,
+\end{equation}
+where $A_v$ and $A_r$ are the column blocks of $A$ and $\mathbf{m}$ masks reference tokens that correspond to padding introduced when the reference is letterboxed to the video resolution. The reference is thus exposed to the backbone as additional tokens that its existing attention can read; no extra fusion module or gate is introduced. The reference keys and values in Eq.~\eqref{eq:5} are the same tensors used in Eq.~\eqref{eq:4}.
+
+\textbf{Learned null reference.} We introduce a learnable token $e_\varnothing \in \mathbb{R}^{C}$ that is broadcast over the reference token grid to form a \emph{null reference} $S_\varnothing$. It is processed by exactly the same path as a real reference, including position mapping, reference self-attention, and joint attention. The null reference therefore differs from a real one only in content, not in computation, which is what makes the difference readout of Sec.~\ref{sec:3_5} meaningful.
+
+\subsection{Paired-Difference Readout}
+\label{sec:3_5}
+
+For a given noisy latent $z_\sigma$, timestep, and text, the reference branch is evaluated twice with shared parameters and independent hidden states: once with the real reference $S$, yielding final hidden state $h_{\mathrm{real}}$, and once with the null reference $S_\varnothing$, yielding $h_{\mathrm{null}}$. Each hidden state is passed through the backbone's final normalization and timestep modulation, then through a readout head
+\begin{equation}\label{eq:6}
+P(h) = \beta\, W_{\mathrm{out}}(h) + W_\Delta(h),
+\end{equation}
+where $W_{\mathrm{out}}$ is the frozen output projection of the backbone, $\beta$ is a small constant ($0.1$), and $W_\Delta$ is a trainable linear layer initialized to zero. The reference correction is the difference
+\begin{equation}\label{eq:7}
+\Delta v = P(h_{\mathrm{real}}) - P(h_{\mathrm{null}}),
+\end{equation}
+and the final prediction is Eq.~\eqref{eq:1} with $\lambda{=}1$.
+
+Three properties follow from this construction. First, any component of the prediction that does not depend on the reference, including content determined by the text alone and the bias of the readout head, is identical in both passes and cancels in Eq.~\eqref{eq:7}; $\Delta v$ carries only reference-dependent information. Second, the frozen term $\beta W_{\mathrm{out}}$ provides a non-zero readout and a gradient path at the start of training, when $W_\Delta$ is still zero, so that the reference adapters receive learning signal from the first update; $W_\Delta$ then learns a correction to this fixed readout. Third, the motion carrier never consumes reference tokens or reference-dependent hidden states. For a fixed input, $v_{\mathrm{motion}}$ is independent of the reference and of all Stage II parameters, so the motion scale $M$ acts only on motion and the reference acts only through $\Delta v$.
+
+\subsection{Training the Reference Branch from Images}
+\label{sec:3_6}
+
+\textbf{Static supervision.} Each training example is an image pair $(r, x^{\mathrm{img}}, c)$. The target image is repeated along the temporal axis to form a static clip, which is encoded by the video VAE into $z_0$. This provides a video-shaped target without any video data.
+
+\textbf{Absorbing the static bias.} The motion carrier is evaluated at $M{=}1$ during training, in its static regime, with gradients disabled. In this regime the carrier already predicts a still video, which is exactly what the static target demands. The residual that the reference branch must supply is therefore the appearance difference between a generic still video and the target, not the suppression of motion. This is what allows static image supervision to shape appearance without teaching the model to be static. At inference the carrier is evaluated at $M \le 0$, and the backbone's motion prior is restored.
+
+\textbf{Objective.} Only the fused prediction is supervised:
+\begin{equation}\label{eq:8}
+\mathcal{L}_{\mathrm{diff}} = \mathbb{E}\big[\,\|\hat v - v^\star\|_2^2\,\big],
+\end{equation}
+averaged over all latent frames. Neither $P(h_{\mathrm{real}})$ nor $P(h_{\mathrm{null}})$ is required to match the target on its own. Through Eq.~\eqref{eq:7}, the real pass receives the gradient of $\mathcal{L}_{\mathrm{diff}}$ with positive sign and the null pass with negative sign, so the two passes jointly learn the increment that a real reference should contribute, and the null token is trained as the reference-free baseline. Because the null pass is part of every training example, no stochastic reference dropout is required; the unconditional reference branch needed for guidance is learned structurally.
+
+\textbf{Text dropout.} With probability $p$, the text embedding is replaced by the embedding of the empty prompt in all three passes, providing the text-unconditional prediction used by classifier-free guidance \cite{ho2022cfg}.
+
+\textbf{Representation alignment.} To regularize the reference stream, the reference tokens at a set of intermediate blocks $\mathcal{B}$ of the real pass are projected by per-block MLPs $\phi_\ell$ and aligned to the patch features of a frozen self-supervised encoder $E$ \cite{simeoni2025dinov3} applied to the reference image, as in REPA \cite{yu2024repa}:
+\begin{equation}\label{eq:9}
+\mathcal{L}_{\mathrm{repa}} = -\frac{1}{|\mathcal{B}|}\sum_{\ell \in \mathcal{B}} \mathbb{E}_{\mathrm{patch}}\big[\cos\big(\phi_\ell(S^{(\ell)}),\, E(r)\big)\big],
+\end{equation}
+with padding patches excluded. The total loss is $\mathcal{L} = \mathcal{L}_{\mathrm{diff}} + \eta\,\mathcal{L}_{\mathrm{repa}}$ with a small $\eta$. The trainable parameters of Stage II are the reference adapters $\Delta W^{\mathrm{ref}}$, the null token $e_\varnothing$, the readout $W_\Delta$, and the projectors $\phi_\ell$; the backbone, motion adapter, VAE, text encoder, and $E$ remain frozen.
+
+\subsection{Inference}
+\label{sec:3_7}
+
+\textbf{Independent guidance.} Text and reference adherence are controlled by separate scales $\omega_T$ and $\omega_I$ through a three-branch guidance rule:
+\begin{equation}\label{eq:10}
+\hat v = \hat v(c_\varnothing, S_\varnothing)
++ \omega_T\big[\hat v(c, S_\varnothing) - \hat v(c_\varnothing, S_\varnothing)\big]
++ \omega_I\big[\hat v(c, S) - \hat v(c, S_\varnothing)\big],
+\end{equation}
+where $c_\varnothing$ denotes the negative (or empty) prompt. For the two null-reference branches, $\Delta v$ is identically zero by Eq.~\eqref{eq:7}, so they reduce to the motion carrier's prediction; the $\omega_I$ term therefore amplifies precisely the reference correction, and the $\omega_T$ term acts on text alone. The motion scale $M$ enters all branches through the carrier and is set independently; it may be constant, specified per block, or scheduled over denoising steps.
+
+\textbf{Optional autoguidance.} A fourth branch $\omega_W[\hat v(c,S) - \hat v_{\mathrm{weak}}(c,S)]$ may be added, where $\hat v_{\mathrm{weak}}$ uses the reference adapters of an earlier checkpoint while sharing the backbone and motion carrier \cite{karras2024autoguidance}. Both branches carry identical conditions, so this term sharpens quality without strengthening either condition.
+
+\textbf{Efficient evaluation.} The three branches of Eq.~\eqref{eq:10} nominally require nine backbone passes. Since the motion carrier does not depend on the reference, its two positive-prompt evaluations coincide, and since the null-reference branches contribute no correction, only one real and one null reference pass are needed. Each denoising step thus costs four passes: two carrier passes (negative and positive prompt) and one real and one null reference pass.
+
+\subsection{Discussion}
+\label{sec:3_8}
+
+The decoupling established in Sec.~\ref{sec:3_5} is a statement about a single forward evaluation: given the same noisy latent, timestep, text, and $M$, the carrier's hidden states and prediction are independent of the reference. It is not a guarantee about an entire sampling trajectory. The fused prediction updates the latent at each step, and the reference therefore influences the input of subsequent carrier evaluations. The architecture guarantees that reference parameters cannot \emph{rewrite} the motion computation; it does not, and should not, prevent the subject's appearance from affecting how the scene evolves.
+
+A second remark concerns what the reference branch learns under static supervision. Because the carrier is static during training, the correction $\Delta v$ is fitted on targets without temporal variation and is applied, at inference, to a carrier that moves. The construction is therefore well suited to appearance that is shared across frames, which is the component that image pairs can supervise, and leaves temporal variation entirely to the carrier. Whether $\Delta v$ transfers cleanly across values of $M$ is an empirical question that we address in Sec.~\ref{sec:experiments}.

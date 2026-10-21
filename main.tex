@@ -26,7 +26,8 @@
 \def\confYear{2026}
 
 %%%%%%%%% TITLE - PLEASE UPDATE
-\title{\LaTeX\ Author Guidelines for \confName~Proceedings}
+\newcommand{\method}{\textsc{DecoupledS2V}}
+\title{Learning Subject-to-Video Generation from Images Only: A Decoupled Motion Carrier and Paired-Difference Reference Branch}
 
 %%%%%%%%% AUTHORS - PLEASE UPDATE
 \author{First Author\\
@@ -49,8 +50,12 @@ First line of institution2 address\\
 \maketitle
 \input{sec/0_abstract}    
 \input{sec/1_intro}
-\input{sec/2_formatting}
-\input{sec/3_finalcopy}
+\input{sec/2_related}
+\input{sec/3_method}
+\input{sec/4_experiments}
+% Template guideline sections kept for reference, not compiled:
+% \input{sec/2_formatting}
+% \input{sec/3_finalcopy}
 {
     \small
     \bibliographystyle{ieeenat_fullname}
