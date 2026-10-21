@@ -1,0 +1,114 @@
+% Method overview, drawn in TikZ. Designed for \textwidth (6.875in) of the CVPR template.
+\begin{tikzpicture}[
+  font=\footnotesize, >={Stealth[length=1.5mm,width=1.2mm]},
+  frozen/.style={draw=black!45, fill=black!6, rounded corners=2pt},
+  train/.style={draw=orange!75!black, fill=orange!15, rounded corners=2pt},
+  stageone/.style={draw=teal!70!black, fill=teal!12, rounded corners=2pt},
+  io/.style={draw=black!55, fill=white, rounded corners=2pt, minimum height=0.55cm, inner sep=2.5pt, align=center},
+  op/.style={circle, draw=black!70, fill=white, inner sep=0pt, minimum size=0.4cm, font=\small},
+  flow/.style={->, draw=black!70, line width=0.55pt},
+  halo/.style={preaction={draw, white, line width=2.4pt}},
+  note/.style={font=\scriptsize, text=black!65, align=center, inner sep=1pt},
+  lanetitle/.style={font=\scriptsize\bfseries, anchor=north west, inner sep=1pt},
+  panel/.style={font=\footnotesize\bfseries, anchor=west, inner sep=0pt},
+  sw/.style={minimum width=0.3cm, minimum height=0.2cm, inner sep=0pt},
+]
+% ============================================================ (a) three passes
+\node[panel] at (0,4.0) {(a) Three passes through one frozen backbone};
+
+\foreach \y/\n in {2.9/mot, 1.45/real, 0/null}
+  \node[frozen, minimum width=4.55cm, minimum height=0.95cm, anchor=west] (\n) at (2.35,\y) {};
+
+\node[lanetitle] at ($(mot.north west)+(0.06,-0.04)$) {Motion carrier};
+\node[lanetitle] at ($(real.north west)+(0.06,-0.04)$) {Reference pass, real};
+\node[lanetitle] at ($(null.north west)+(0.06,-0.04)$) {Reference pass, null};
+\node[note, anchor=south west] at ($(mot.south west)+(0.06,0.06)$) {frozen DiT, no grad};
+\node[note, anchor=south west] at ($(real.south west)+(0.06,0.06)$) {frozen DiT, $M{=}0$};
+\node[note, anchor=south west] at ($(null.south west)+(0.06,0.06)$) {frozen DiT, $M{=}0$};
+
+\node[stageone, anchor=east, minimum height=0.62cm, inner sep=2pt, align=center] at ($(mot.east)+(-0.07,0)$) {$+M\,\Delta W_{qkv}$\\[-2pt]{\scriptsize Stage I}};
+\node[train, anchor=east, minimum height=0.62cm, inner sep=2pt, align=center] at ($(real.east)+(-0.07,0)$) {joint attn\\[-2pt]{\scriptsize + Ref LoRA}};
+\node[train, anchor=east, minimum height=0.62cm, inner sep=2pt, align=center] at ($(null.east)+(-0.07,0)$) {joint attn\\[-2pt]{\scriptsize + Ref LoRA}};
+
+\node[note] at (4.62,2.175) {the carrier never reads the reference};
+\node[note] at (4.62,0.725) {$\updownarrow$\; shared weights, separate hidden states};
+\node[note, anchor=south east] at ($(mot.north east)+(0,0.03)$) {train $M{=}1$, \ inference $M{\le}0$};
+
+% inputs
+\node[io] (zin) at (0.85,2.9) {$z_t,\ t,\ c$};
+\node[io] (ref) at (0.85,1.45) {reference $r$};
+\node[train, minimum height=0.55cm, inner sep=2.5pt] (nul) at (0.85,0) {learned $e_\varnothing$};
+\node[note, below=1pt of zin] {latent, step, text};
+\node[note, below=1pt of ref] {VAE, patchify};
+\node[note, below=1pt of nul] {broadcast to grid};
+
+\draw[flow] (zin.east) -- (mot.west);
+\draw[black!70, line width=0.55pt] (1.95,2.9) -- (1.95,0.17);
+\fill[black!70] (1.95,2.9) circle (0.9pt) (1.95,1.62) circle (0.9pt);
+\draw[flow] (1.95,1.62) -- (2.35,1.62);
+\draw[flow] (1.95,0.17) -- (2.35,0.17);
+\draw[flow, halo] (ref.east |- 0,1.28) -- node[note, above, pos=0.3] {$S$} (2.35,1.28);
+\draw[flow, halo] (nul.east |- 0,-0.17) -- node[note, above, pos=0.3] {$S_\varnothing$} (2.35,-0.17);
+
+% readout
+\node[frozen, minimum height=0.5cm, minimum width=0.6cm, inner sep=2pt] (wout) at (7.8,2.9) {$W_{\mathrm{out}}$};
+\node[train, minimum height=0.5cm, minimum width=0.6cm, inner sep=2pt] (pr) at (7.8,1.45) {$P$};
+\node[train, minimum height=0.5cm, minimum width=0.6cm, inner sep=2pt] (pn) at (7.8,0) {$P$};
+\draw[flow] (mot.east) -- (wout.west);
+\draw[flow] (real.east) -- node[note, above] {$h_{\mathrm{real}}$} (pr.west);
+\draw[flow] (null.east) -- node[note, above] {$h_{\mathrm{null}}$} (pn.west);
+\node[op] (minus) at (8.75,0.725) {$-$};
+\draw[flow] (pr.east) -| node[note, pos=0.82, left] {$+$} (minus.north);
+\draw[flow] (pn.east) -| node[note, pos=0.82, left] {$-$} (minus.south);
+\node[op] (plus) at (9.6,2.9) {$+$};
+\draw[flow] (wout.east) -- node[note, above] {$v_{\mathrm{mot}}$} (plus.west);
+\draw[flow] (minus.east) -| node[note, pos=0.22, below] {$\Delta v$} node[note, pos=0.72, left] {$\lambda\,\Delta v$} (plus.south);
+\node[io] (vhat) at (10.45,2.9) {$\hat v$};
+\draw[flow] (plus.east) -- (vhat.west);
+\node[io] (loss) at (10.75,1.75) {$\lVert \hat v - v^{\star}\rVert^2$};
+\draw[flow] (vhat.south) -- (vhat.south |- loss.north);
+\node[note, anchor=north] at (10.75,1.38) {$v^{\star}$: target image\\repeated as a\\still clip};
+\node[note, anchor=north] at (8.3,-0.38) {$P(h)=0.1\,W_{\mathrm{out}}(h)+W_{\Delta}(h)$};
+
+% legend
+\node[frozen, sw] (l1) at (0.15,-0.95) {};
+\node[note, anchor=west] (t1) at ($(l1.east)+(0.05,0)$) {frozen};
+\node[train, sw, anchor=west] (l2) at ($(t1.east)+(0.25,0)$) {};
+\node[note, anchor=west] (t2) at ($(l2.east)+(0.05,0)$) {trained in Stage II};
+\node[stageone, sw, anchor=west] (l3) at ($(t2.east)+(0.25,0)$) {};
+\node[note, anchor=west] at ($(l3.east)+(0.05,0)$) {trained in Stage I, then frozen};
+
+% ============================================================ (b) attention mask
+\node[panel] at (11.8,4.0) {(b) Attention in a reference pass};
+\def\bx{12.4} \def\by{1.45} \def\vw{1.3} \def\rw{0.8}
+\fill[black!12] (\bx,\by+\rw) rectangle (\bx+\vw,\by+\rw+\vw);
+\fill[orange!40] (\bx+\vw,\by+\rw) rectangle (\bx+\vw+\rw,\by+\rw+\vw);
+\fill[orange!20] (\bx+\vw,\by) rectangle (\bx+\vw+\rw,\by+\rw);
+\fill[pattern=north east lines, pattern color=black!30] (\bx,\by) rectangle (\bx+\vw,\by+\rw);
+\draw[black!55] (\bx,\by) rectangle (\bx+\vw+\rw,\by+\rw+\vw);
+\draw[black!55] (\bx+\vw,\by) -- (\bx+\vw,\by+\rw+\vw) (\bx,\by+\rw) -- (\bx+\vw+\rw,\by+\rw);
+\node[note, anchor=south] at (\bx+0.5*\vw,\by+\rw+\vw) {$K_v$};
+\node[note, anchor=south] at (\bx+\vw+0.5*\rw,\by+\rw+\vw) {$K_r$};
+\node[note, anchor=east] at (\bx,\by+\rw+0.5*\vw) {$Q_v$};
+\node[note, anchor=east] at (\bx,\by+0.5*\rw) {$Q_r$};
+\node[note, text=black!75] at (\bx+\vw+0.5*\rw,\by+\rw+0.5*\vw) {read};
+\node[note] at (\bx+0.5*\vw,\by+0.5*\rw) {masked};
+\draw[decorate, decoration={brace, amplitude=3pt}, black!55] (\bx+\vw+\rw+0.08,\by+\rw+\vw) -- (\bx+\vw+\rw+0.08,\by+\rw);
+\node[note, anchor=west] at (\bx+\vw+\rw+0.2,\by+\rw+0.5*\vw) {video reads video\\and reference in\\one softmax};
+\node[note, anchor=west] at (\bx+\vw+\rw+0.2,\by+0.5*\rw) {reference reads\\only itself};
+
+% ============================================================ (c) signed motion scale
+\node[panel] at (11.8,1.0) {(c) Stage I: a signed motion scale};
+\node[note, anchor=west, text=black!75] at (11.8,0.6) {image $\times F$ \;$\rightarrow$\; target at $M{=}{+}1$};
+\node[note, anchor=west, text=black!75] at (11.8,0.25) {real video \;$\rightarrow$\; target at $M{=}{-}1$};
+\def\ay{-0.5} \def\ux{1.35} \def\ox{14.4}
+\draw[->, black!70, line width=0.55pt] (11.95,\ay) -- (16.7,\ay) node[note, right, text=black!75] {$M$};
+\foreach \m/\lab in {-1/{more motion}, 0/{native}, 1/{still}} {
+  \draw[black!70] (\ox+\m*\ux,\ay-0.06) -- (\ox+\m*\ux,\ay+0.06);
+  \node[note, anchor=north] at (\ox+\m*\ux,\ay-0.07) {$\m$\\\lab};
+}
+\draw[teal!70!black, line width=2.2pt, line cap=round] (\ox-\ux,\ay+0.2) -- (\ox,\ay+0.2);
+\node[note, anchor=south, text=teal!60!black] at (\ox-0.5*\ux,\ay+0.25) {inference};
+\fill[orange!75!black] (\ox+\ux,\ay+0.13) -- ++(-0.09,0.15) -- ++(0.18,0) -- cycle;
+\node[note, anchor=south, text=orange!70!black] at (\ox+\ux,\ay+0.3) {Stage II training};
+\end{tikzpicture}
